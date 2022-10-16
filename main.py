@@ -43,14 +43,36 @@ import argparse  # allows us to parse command line arguments
 from termcolor import colored  # pip install termcolor  => a module to print colored text in the terminal
 
 
-def get_current_mac():
-    """returns the current MAC Address of the interface"""
-    eth0 = subprocess.check_output(['ifconfig'])  # returns the output of the command as a byte string => b'<content>'
-    # convert the byte string to a string using decode('utf-8) and split the string into a list using split('\n')
-    eth0 = eth0.decode('utf-8').split('\n')
-    # get the line containing 'ether' and extract the mac address
-    mac_address = [line.split()[1] for line in eth0 if 'ether' in line][0]
-    return mac_address
+def get_interface_dict() -> dict:
+    """returns all interfaces(keys) and mac addresses (values) as a dictionary
+    >>> cmd_outputs = [
+          'eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>,... ether 00:11:22:33:44:55  txqueuelen 1000  (Ethernet)',
+          'lo: flags=73<UP,LOOPBACK,RUNNING>,... ether 00:00:00:00:00:00  txqueuelen 1000  (Ethernet)',
+          'wlan0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>, ... TX errors 0  dropped 0 overruns 0'
+        ]
+    >>> interface_dict = {
+            output.split(':')[0]: output.split()[output.split().index('ether') + 1]
+            for output in cmd_outputs if 'ether' in output.split()
+        }
+    >>> interface_dict
+    {'eth0': '00:11:22:33:44:55', 'lo': '0a:66:55:44:33:22'}
+    """
+    # subprocess.check_output returns the output of the command as a byte string => b'<content>'
+    # convert the byte string to a string using decode('utf-8')
+    # and split the output string into a list by lines using split('\n\n')
+    cmd_outputs = subprocess.check_output(['ifconfig']).decode('utf-8').split('\n\n')  # ['eth0:...', 'lo:...']
+
+    # identify interfaces and the line containing 'ether' and extract the mac address along with interface.
+    return {
+        output.split(':')[0]: output.split()[output.split().index('ether') + 1]
+        for output in cmd_outputs if 'ether' in output.split()
+    }
+
+
+def get_mac(interface) -> str:
+    """returns the MAC Address of the given interface"""
+    cmd_output = subprocess.check_output(['ifconfig', interface]).decode('utf-8').split()
+    return cmd_output[cmd_output.index('ether') + 1]
 
 
 def generate_mac():
@@ -68,27 +90,33 @@ def generate_mac():
     return random_mac
 
 
-def get_interface():
-    """returns the list of interfaces that we want to change the MAC Address of"""
-    interfaces = subprocess.check_output(['ifconfig']).decode('utf-8').split('\n\n')
-    interfaces = [interface.split()[0] for interface in interfaces if interface != '']
-    # print(interfaces)
-    return interfaces
+def get_interface_list():  # ['eth0', 'lo', 'wlan0']
+    """returns a list of all interfaces that we want to change the MAC Address of"""
+    return [interface for interface, _ in get_interface_dict().items()]
 
 
-def change_all_mac(interface=None, new_mac=None):
+def is_valid_mac(mac):
+    """returns True if the given MAC Address is valid, else returns False"""
+    return len(mac.split(':')) == 6 and all(len(octet) == 2 for octet in mac.split(':'))
+
+
+def change_all_mac(interface=None, mac=None):
     """changes the MAC Address of all the interfaces until the system is rebooted"""
-    interfaces = get_interface()  # Eg: ['eth0', 'lo', 'wlan0']
-    for interface in interfaces:
-        new_mac = generate_mac()
-        print(f'Changing MAC Address for {interface} to {new_mac}')
-        subprocess.call(['ifconfig', interface, 'down'])
-        subprocess.call(['ifconfig', interface, 'hw', 'ether', new_mac])
-        subprocess.call(['ifconfig', interface, 'up'])
-        if get_current_mac() == new_mac:
-            print(colored(f'[+] MAC Address was successfully changed to {new_mac}', 'green'))
-        else:
-            print('MAC Address was not changed')
+    interfaces = get_interface_list() if interface is None else [interface]  # Eg: ['eth0', 'lo', 'wlan0']
+    if (interface is not None) and (interface not in get_interface_list()):  # None in ['eth0', 'lo', 'wlan0'] => False
+        print(colored(f'[-] INVALID INTERFACE: {interface}!!! TRY AGAIN', 'red'))
+        return
+    else:
+        for interface in interfaces:
+            new_mac = generate_mac() if mac is None else mac
+            print(colored(f'[+] Changing MAC Address for {interface} to {new_mac}', 'blue'))
+            subprocess.call(['ifconfig', interface, 'down'])
+            subprocess.call(['ifconfig', interface, 'hw', 'ether', new_mac])
+            subprocess.call(['ifconfig', interface, 'up'])
+            if get_mac(interface) == new_mac:
+                print(colored(f'[+] MAC Address for `{interface}` was successfully changed to `{new_mac}`', 'green'))
+            else:
+                print(colored('[-] MAC Address WAS NOT CHANGED!!!', 'red'))
 
 
 def get_arguments():
@@ -112,8 +140,19 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--mac', dest='new_mac', help='New MAC Address')
     options = parser.parse_args()
     if not options.interface:
-        parser.error('[-] Please specify an interface, use --help for more info')
-    elif not options.new_mac:
+        print(colored('[-] Please specify an interface, use --help for more info', 'red'))
+        print(colored(f'[+] No INTERFACE specified, changing MAC Address of all available INTERFACES: '
+                      f'{", ".join(get_interface_list())}', 'green'))
+    if not options.new_mac:
+        print(colored('[-] Please specify a mac address, use --help for more info', 'red'))
         print(colored('[+] No MAC Address specified, changing MAC Address to a random MAC Address', 'green'))
-        options.new_mac = generate_mac()
+    # print(options.interface, options.new_mac)
     change_all_mac(options.interface, options.new_mac)
+
+# OUTPUT:
+# [-] Please specify an interface, use --help for more info
+# [+] No INTERFACE specified, changing MAC Address of all available INTERFACES: eth0
+# [-] Please specify a mac address, use --help for more info
+# [+] No MAC Address specified, changing MAC Address to a random MAC Address
+# [+] Changing MAC Address for eth0 to 9a:8d:b9:ef:10:14
+# [+] MAC Address for `eth0` was successfully changed to `9a:8d:b9:ef:10:14`
